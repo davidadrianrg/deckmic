@@ -77,13 +77,17 @@ function wsUrl() {
   return `${proto}://${location.host}/?pin=${encodeURIComponent(store.pin)}`;
 }
 
+let wsEverOpened = false;   // el WS llegó a abrirse en este intento
+
 function connect() {
   if (!store.pin) { showPin(); return; }
   setDot(null);
   try { if (ws) { ws.onclose = null; ws.close(); } } catch (e) {}
   ws = new WebSocket(wsUrl());
   ws.binaryType = "arraybuffer";
+  wsEverOpened = false;
   ws.onopen = () => {
+    wsEverOpened = true;
     setDot(true);
     hidePin();
     setStatus(vad ? "manos libres activo" : "listo");
@@ -95,8 +99,18 @@ function connect() {
     try { m = JSON.parse(ev.data); } catch (e) { return; }
     handleMsg(m);
   };
-  ws.onclose = () => {
+  ws.onclose = async () => {
     setDot(false);
+    // handshake rechazado sin llegar a abrir: distinguir PIN malo de red caída
+    if (!wsEverOpened && store.pin) {
+      const v = await validatePin(store.pin);
+      if (v === "bad") {
+        setStatus("PIN incorrecto", "err");
+        store.pin = "";                 // no dejar guardado un PIN que el server rechaza
+        showPin("El PIN guardado no vale: el servidor lo rechaza. Introdúcelo de nuevo.");
+        return;                         // fuera del bucle de reintento
+      }
+    }
     setStatus("reconectando…");
     setTimeout(() => { if (!ws || ws.readyState > 1) connect(); }, 2000);
   };
@@ -155,16 +169,27 @@ async function fetchStatus() {
 }
 
 /* ---------------- PIN ---------------- */
-function showPin() {
+function showPin(msg) {
   $("screen-pin").hidden = false;
   $("screen-app").hidden = true;
   $("pin").value = store.pin;
+  pinError(msg || null);
   $("pin").focus();
 }
 function hidePin() {
   $("screen-pin").hidden = true;
   $("screen-app").hidden = false;
 }
+/* Valida un PIN contra /api/status. Devuelve "ok" | "bad" | "unreachable". */
+async function validatePin(pin) {
+  try {
+    const r = await fetch(`/api/status?pin=${encodeURIComponent(pin)}`);
+    return r.status === 401 ? "bad" : "ok";
+  } catch (e) {
+    return "unreachable";
+  }
+}
+
 async function tryConnect() {
   const p = $("pin").value.trim();
   if (p.length < 4) { pinError("El PIN tiene 6 dígitos (míralo en el PC)"); return; }
@@ -187,6 +212,11 @@ async function tryConnect() {
 }
 function pinError(msg) {
   const el = $("pin-error");
+  el.hidden = !msg;
+  if (msg) el.textContent = msg;
+}
+function cfgError(msg) {
+  const el = $("cfg-error");
   el.hidden = !msg;
   if (msg) el.textContent = msg;
 }
@@ -375,8 +405,19 @@ document.addEventListener("DOMContentLoaded", () => {
     $("config-panel").hidden = false;
   });
   $("btn-cfg-close").addEventListener("click", () => { $("config-panel").hidden = true; });
-  $("btn-cfg-save").addEventListener("click", () => {
-    store.pin = $("cfg-pin").value.trim();
+  $("btn-cfg-save").addEventListener("click", async () => {
+    const newPin = $("cfg-pin").value.trim();
+    cfgError(null);
+    if (newPin !== store.pin && newPin) {
+      // validar antes de guardar y cerrar: así el usuario ve el error en el panel
+      const v = await validatePin(newPin);
+      if (v === "bad") { cfgError("Ese PIN no lo acepta el servidor. Revísalo (lo ves con --check)."); return; }
+      if (v === "unreachable") { cfgError("No puedo validar el PIN: no alcanzo el servidor (¿IP/certificado?)."); return; }
+      store.pin = newPin;
+    } else if (!newPin) {
+      cfgError("El PIN no puede quedar vacío.");
+      return;
+    }
     store.space = $("cfg-space-key").checked;
     store.keepAwake = $("cfg-keep-awake").checked;
     keepAwake(store.keepAwake);
