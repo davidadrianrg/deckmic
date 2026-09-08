@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0b1220">
+<title>DeckMic</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ===================== Pantalla PIN ===================== -->
+<section id="screen-pin" class="screen">
+  <div class="pin-box">
+    <div class="logo">🎙️</div>
+    <h1>DeckMic</h1>
+    <p class="sub">Tu móvil es el micrófono de tu PC</p>
+    <input id="pin" inputmode="numeric" autocomplete="off" placeholder="PIN del servidor"
+           maxlength="6">
+    <button id="btn-connect" class="primary">Conectar</button>
+    <p id="pin-error" class="error" hidden></p>
+    <p class="hint">El PIN aparece al arrancar el servidor en el PC<br>(python3 server.py)</p>
+  </div>
+</section>
+
+<!-- ===================== App ===================== -->
+<section id="screen-app" class="screen" hidden>
+  <header>
+    <div class="dot" id="conn-dot"></div>
+    <div class="head-txt">
+      <div id="conn-txt">conectando…</div>
+      <div id="server-info" class="muted"></div>
+    </div>
+    <button id="btn-config" title="Ajustes">⚙️</button>
+  </header>
+
+  <div id="modes" class="chips">
+    <button class="chip" data-mode="type">✍️ Escribir</button>
+    <button class="chip" data-mode="enter">⏎ Escribir + Intro</button>
+    <button class="chip" data-mode="clip">📋 Portapapeles</button>
+    <button class="chip" data-mode="cmd">⚡ Comando</button>
+  </div>
+
+  <div class="stage">
+    <div class="level-wrap"><div id="level"></div></div>
+    <button id="btn-mic" class="mic">
+      <span class="mic-ic">🎙️</span>
+      <span class="mic-lbl" id="mic-lbl">Mantén pulsado<br>para hablar</span>
+    </button>
+    <div id="status" class="status">listo</div>
+    <label class="vad-toggle">
+      <input type="checkbox" id="vad">
+      <span>Modo automático (manos libres)</span>
+    </label>
+  </div>
+
+  <div id="transcript" class="transcript">
+    <div class="tr-head">
+      <span>Transcripciones</span>
+      <button id="btn-copy-last" class="mini">📋 copiar última</button>
+      <button id="btn-clear" class="mini">🗑️ limpiar</button>
+    </div>
+    <div id="tr-list" class="tr-list"></div>
+  </div>
+</section>
+
+<!-- ===================== Ajustes ===================== -->
+<div id="config-panel" hidden>
+  <div class="cfg-card">
+    <h3>Ajustes</h3>
+    <label>PIN del servidor
+      <input id="cfg-pin" inputmode="numeric" maxlength="6">
+    </label>
+    <label class="row"><input type="checkbox" id="cfg-keep-awake" checked>
+      Mantener pantalla encendida</label>
+    <label class="row"><input type="checkbox" id="cfg-space-key">
+      Barra espaciadora = hablar (teclado físico)</label>
+    <div class="row-actions">
+      <button id="btn-cfg-save" class="primary">Guardar</button>
+      <button id="btn-cfg-close">Cerrar</button>
+    </div>
+    <p class="hint" id="cfg-server"></p>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

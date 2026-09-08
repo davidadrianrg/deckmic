@@ -1,0 +1,9 @@
+# datos locales
+certs/
+data/
+models/
+config.json
+*.log
+__pycache__/
+*.pyc
+.env
