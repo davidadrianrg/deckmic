@@ -1,5 +1,6 @@
-/* Service worker mínimo: cache-first para la shell, red para /api y WS. */
-const CACHE = "deckmic-v1";
+/* Service worker mínimo: cache-first para la shell, red para /api y WS.
+   __VERSION__ lo sustituye server.py al servir (bump de VERSION = caché nueva). */
+const CACHE = "deckmic-__VERSION__";
 const SHELL = ["/", "/index.html", "/app.js", "/style.css", "/pcm-worklet.js", "/manifest.json"];
 
 self.addEventListener("install", (e) => {

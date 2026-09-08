@@ -80,6 +80,7 @@ header {
 
 .status { font-size: 14px; color: #8b98ad; min-height: 20px; }
 .status.transcribing { color: #f0b429; }
+.status.err { color: #ff6b6b; }
 
 .vad-toggle { display: flex; gap: 8px; align-items: center; font-size: 13.5px;
   color: #aab6cc; }

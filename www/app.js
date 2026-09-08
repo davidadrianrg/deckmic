@@ -8,6 +8,16 @@ const store = {
   set pin(v) { localStorage.setItem("deckmic-pin", v); },
   get mode() { return localStorage.getItem("deckmic-mode") || "type"; },
   set mode(v) { localStorage.setItem("deckmic-mode", v); },
+  get space() { return localStorage.getItem("deckmic-space") === "1"; },
+  set space(v) {
+    if (v) localStorage.setItem("deckmic-space", "1");
+    else localStorage.removeItem("deckmic-space");
+  },
+  get keepAwake() { return localStorage.getItem("deckmic-keepawake") !== "0"; },
+  set keepAwake(v) {
+    if (v) localStorage.removeItem("deckmic-keepawake");
+    else localStorage.setItem("deckmic-keepawake", "0");
+  },
 };
 
 /* ---------------- estado global ---------------- */
@@ -18,6 +28,7 @@ let vad = false;             // modo manos libres
 let micOn = false;           // usuario mantiene pulsado el botón
 let audioCtx = null, workletNode = null, mediaStream = null;
 let lastTranscript = "";
+let serverVersion = "";
 let wakeLock = null;
 let micHeldMs = 0;
 
@@ -95,6 +106,7 @@ function connect() {
 function handleMsg(m) {
   switch (m.type) {
     case "hello":
+      serverVersion = m.version || "";
       if (!m.whisper_ok) {
         addTranscript({ label: "aviso", text: "El servidor no tiene whisper-cli/modelo. Ejecuta install.sh en el PC.", err: true });
       }
@@ -138,7 +150,7 @@ async function fetchStatus() {
     const j = await r.json();
     const mb = j.model_mb ? `${Math.round(j.model_mb)}MB` : "sin modelo";
     $("server-info").textContent =
-      `${j.hostname} · whisper ${j.whisper ? "✓" : "✗"} · ${j.model || "sin modelo"} ${j.model_ok ? "(" + mb + ")" : ""}`;
+      `${j.hostname} · whisper ${j.whisper ? "✓" : "✗"} · ${j.model || "sin modelo"} ${j.model_ok ? "(" + mb + ")" : ""} · v${j.version || "?"}`;
   } catch (e) {}
 }
 
@@ -159,14 +171,15 @@ async function tryConnect() {
   $("btn-connect").disabled = true;
   $("btn-connect").textContent = "Conectando…";
   pinError(null);
-  store.pin = p;
   try {
     const r = await fetch(`/api/status?pin=${encodeURIComponent(p)}`);
     if (r.status === 401) { pinError("PIN incorrecto"); return; }
+    store.pin = p;            // solo guardamos un PIN que el servidor validó
     hidePin();
     connect();
   } catch (e) {
-    pinError("No puedo alcanzar el servidor (¿está el PIN bien?)");
+    store.pin = p;            // fallo de red/SSL, no de PIN: lo guardamos igual
+    pinError("No puedo alcanzar el servidor (misma WiFi, IP correcta y certificado aceptado)");
   } finally {
     $("btn-connect").disabled = false;
     $("btn-connect").textContent = "Conectar";
@@ -181,15 +194,27 @@ function pinError(msg) {
 /* ---------------- audio ---------------- */
 async function initAudio() {
   if (audioCtx) return;
-  mediaStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      channelCount: 1,
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: true,
-      sampleRate: 48000,
-    },
-  });
+  if (!window.isSecureContext) {
+    throw new Error("el micrófono exige HTTPS: abre la app con https:// y acepta el certificado");
+  }
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: true,
+        sampleRate: 48000,
+      },
+    });
+  } catch (e) {
+    mediaStream = null;
+    if (e && e.name === "NotAllowedError")
+      throw new Error("permiso de micrófono denegado (actívalo en los ajustes del navegador)");
+    if (e && e.name === "NotReadableError")
+      throw new Error("el micrófono está ocupado o no disponible en este dispositivo");
+    throw new Error("no pude abrir el micrófono (" + ((e && e.name) || e) + ")");
+  }
   audioCtx = new AudioContext({ sampleRate: 48000 });
   await audioCtx.resume();
   await audioCtx.audioWorklet.addModule("/pcm-worklet.js");
@@ -231,7 +256,9 @@ function micDown() {
   $("btn-mic").classList.add("rec");
   $("mic-lbl").innerHTML = "Grabando…<br>suelta para enviar";
   setStatus("grabando…");
-  startSession(false).then((ok) => { if (!ok) micUp(); });
+  startSession(false)
+    .then((ok) => { if (!ok) micUp(); })
+    .catch((e) => micFail(e));
 }
 function micUp() {
   if (!micOn) return;
@@ -247,13 +274,26 @@ function micUp() {
   endSession();
 }
 
+function micFail(err) {
+  micOn = false;
+  $("btn-mic").classList.remove("rec");
+  $("mic-lbl").innerHTML = "Mantén pulsado<br>para hablar";
+  setStatus((err && err.message) || String(err), "err");
+}
+
 /* ---------------- VAD manos libres ---------------- */
 async function toggleVad() {
   vad = $("vad").checked;
   if (vad) {
-    const ok = await startSession(true);
-    if (!ok) { $("vad").checked = false; vad = false; }
-    else setStatus("manos libres: escuchando");
+    try {
+      const ok = await startSession(true);
+      if (!ok) { $("vad").checked = false; vad = false; }
+      else setStatus("manos libres: escuchando");
+    } catch (e) {
+      $("vad").checked = false;
+      vad = false;
+      setStatus((e && e.message) || String(e), "err");
+    }
   } else {
     cancelSession();
     setStatus("listo");
@@ -283,6 +323,11 @@ document.addEventListener("DOMContentLoaded", () => {
   if (qs.get("pin")) store.pin = qs.get("pin");
   if (store.pin && qs.get("auto") !== "0") connect();
   else showPin();
+
+  // restaurar ajustes guardados y re-aplicar el wake lock al arrancar
+  $("cfg-space-key").checked = store.space;
+  $("cfg-keep-awake").checked = store.keepAwake;
+  keepAwake(store.keepAwake);
 
   // botón mic (touch + mouse)
   const micBtn = $("btn-mic");
@@ -326,14 +371,15 @@ document.addEventListener("DOMContentLoaded", () => {
   // ajustes
   $("btn-config").addEventListener("click", () => {
     $("cfg-pin").value = store.pin;
-    $("cfg-server").textContent = location.host;
+    $("cfg-server").textContent = location.host + (serverVersion ? ` · servidor v${serverVersion}` : "");
     $("config-panel").hidden = false;
   });
   $("btn-cfg-close").addEventListener("click", () => { $("config-panel").hidden = true; });
   $("btn-cfg-save").addEventListener("click", () => {
     store.pin = $("cfg-pin").value.trim();
-    $("cfg-space-key").checked && localStorage.setItem("deckmic-space", "1");
-    keepAwake($("cfg-keep-awake").checked);
+    store.space = $("cfg-space-key").checked;
+    store.keepAwake = $("cfg-keep-awake").checked;
+    keepAwake(store.keepAwake);
     $("config-panel").hidden = true;
     connect();
   });

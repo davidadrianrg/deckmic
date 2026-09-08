@@ -93,6 +93,65 @@ compile_whisper() {
 }
 
 # --------------------------------------------------------------------------
+build_ydotool_container() {
+  # Compila ydotool+ydotoold (master) dentro de un contenedor rootless:
+  # - SteamOS 3 trae podman funcional sin root → no hace falta desactivar el
+  #   readonly ni inicializar el keyring de pacman, y no se borra al actualizar.
+  # - master (no v1.0.4) para tener el socket en $XDG_RUNTIME_DIR/.ydotool_socket
+  #   y los defaults modernos de "type".
+  # - El binario resultante solo depende de glibc → corre bien en el host.
+  local RUNNER=""
+  if command -v podman >/dev/null 2>&1; then RUNNER=podman
+  elif command -v docker >/dev/null 2>&1; then RUNNER=docker
+  else warn "ni podman ni docker disponibles"; return 1; fi
+
+  say "  compilando ydotool (master) en contenedor $RUNNER (tarda unos minutos)…"
+  mkdir -p "$INSTALL_DIR/bin"
+  if ! "$RUNNER" run --rm -v "$INSTALL_DIR":/out archlinux:latest bash -c '
+    set -e
+    pacman -Sy --noconfirm --needed git cmake make gcc scdoc libevdev
+    git clone --depth 1 https://github.com/ReimuNotMoe/ydotool /src
+    # CMake >= 4 rechaza cmake_minimum_required antiguos sin esto:
+    cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    cmake --build /src/build -j"$(nproc)"
+    find /src/build -type f \( -name ydotool -o -name ydotoold \) \
+      -exec cp {} /out/bin/ \;
+  '; then
+    err "la compilación en contenedor falló"
+    return 1
+  fi
+  [[ -f "$INSTALL_DIR/bin/ydotool"  ]] && chmod 755 "$INSTALL_DIR/bin/ydotool"
+  [[ -f "$INSTALL_DIR/bin/ydotoold" ]] && chmod 755 "$INSTALL_DIR/bin/ydotoold"
+  [[ -x "$INSTALL_DIR/bin/ydotool" ]]
+}
+
+setup_ydotoold_user_service() {
+  # Daemon como servicio de USUARIO: /dev/uinput recibe ACL rw para el usuario
+  # del asiento (uaccess de systemd), así que no hace falta root.
+  [[ -x "$INSTALL_DIR/bin/ydotoold" ]] || return 1
+  local UNIT_DIR="$HOME/.config/systemd/user"
+  mkdir -p "$UNIT_DIR"
+  cat > "$UNIT_DIR/ydotoold.service" <<EOF
+[Unit]
+Description=ydotoold — daemon uinput para ydotool (DeckMic)
+
+[Service]
+# Nota: ydotoold NO lee YDOTOOL_SOCKET; escucha siempre en
+# $XDG_RUNTIME_DIR/.ydotool_socket (systemd user lo define).
+ExecStart=$INSTALL_DIR/bin/ydotoold
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+  systemctl --user daemon-reload
+  systemctl --user enable --now ydotoold.service 2>/dev/null \
+    || warn "no pude arrancar ydotoold ahora; en modo escritorio: systemctl --user start ydotoold"
+  ok "ydotoold corriendo como servicio de usuario (socket: \$XDG_RUNTIME_DIR/.ydotool_socket)"
+}
+
 install_ydotool() {
   say "[2/4] ydotool (escritura en Wayland/gamescope)"
   if command -v ydotool >/dev/null 2>&1; then
@@ -103,51 +162,28 @@ install_ydotool() {
   if [[ -x "$INSTALL_DIR/bin/ydotool" ]]; then
     ok "ya instalado: $INSTALL_DIR/bin/ydotool"
     YDOTOOL_BIN="$INSTALL_DIR/bin/ydotool"
+    setup_ydotoold_user_service || true
     return 0
   fi
 
-  # binarios precompilados de github (proyectos de comunidad)
-  local urls=(
-    "https://github.com/ReimuNotMoe/ydotool/releases/latest/download/ydotool.tar.gz"
-  )
-  for u in "${urls[@]}"; do
-    say "  probando $u"
-    if curl -fsSL "$u" -o /tmp/ydotool.tar.gz 2>/dev/null; then
-      mkdir -p /tmp/ydotool-x
-      if tar -xzf /tmp/ydotool.tar.gz -C /tmp/ydotool-x 2>/dev/null; then
-        local found
-        found="$(find /tmp/ydotool-x -type f \( -name 'ydotool' -o -name 'ydotoold' \) | head -2 || true)"
-        if [[ -n "$found" ]]; then
-          find /tmp/ydotool-x -type f -name 'ydotool' -exec install -m 755 {} "$INSTALL_DIR/bin/ydotool" \; 2>/dev/null || true
-          find /tmp/ydotool-x -type f -name 'ydotoold' -exec install -m 755 {} "$INSTALL_DIR/bin/ydotoold" \; 2>/dev/null || true
-          if [[ -x "$INSTALL_DIR/bin/ydotool" ]]; then
-            ok "instalado $INSTALL_DIR/bin/ydotool"
-            YDOTOOL_BIN="$INSTALL_DIR/bin/ydotool"
-            rm -rf /tmp/ydotool-x /tmp/ydotool.tar.gz
-            return 0
-          fi
-        fi
-      fi
-    fi
-  done
-  warn "no pude descargar ydotool precompilado."
-  if [[ "$STEAMOS" -eq 1 ]]; then
-    cat <<EOF
-
-  En SteamOS (modo escritorio, terminal):
-    steamos-readonly disable
-    sudo pacman -S ydotool
-    sudo systemctl enable --now ydotool    # daemon uinput
-    (opcional) steamos-readonly enable
-
-  Alternativa: compilar ydotool desde fuente
-    git clone https://github.com/ReimuNotMoe/ydotool ~/ydotool-src
-    cd ~/ydotool-src && mkdir build && cd build
-    cmake .. && make -j\$(nproc) && sudo make install
-EOF
-  else
-    echo "  Instala con tu gestor de paquetes: sudo pacman -S ydotool / sudo apt install ydotool"
+  if build_ydotool_container; then
+    ok "instalado $INSTALL_DIR/bin/ydotool"
+    [[ -x "$INSTALL_DIR/bin/ydotoold" ]] \
+      || warn "ydotoold no se compiló: no habrá servicio de usuario"
+    YDOTOOL_BIN="$INSTALL_DIR/bin/ydotool"
+    setup_ydotoold_user_service || true
+    return 0
   fi
+
+  warn "no pude instalar ydotool automáticamente."
+  cat <<EOF
+
+  Opciones manuales:
+  - SteamOS 3: usa podman (viene de serie). Activa Developer Mode si hace falta.
+  - Cualquier Linux: sudo pacman -S ydotool  /  sudo apt install ydotool
+    (en SteamOS eso exige 'steamos-readonly disable' + 'pacman-key --init/--populate'
+     y se borra con cada actualización — por eso preferimos el contenedor)
+EOF
   return 0  # no bloquear: el servidor usará modo debug
 }
 
@@ -197,7 +233,25 @@ write_config() {
   PIN="$(shuf -i 100000-999999 -n 1)"
   if [[ -f "$CFG" ]]; then
     ok "config ya existe: $CFG (no lo toco)"
-    # asegurar rutas de binarios locales
+    # asegurar ruta del ydotool recién instalado (el modo "auto" de server.py
+    # solo detecta rutas absolutas existentes; "~" no pasa os.path.isfile)
+    if [[ -n "${YDOTOOL_BIN:-}" ]]; then
+      python3 - "$CFG" "$YDOTOOL_BIN" <<'PYEOF'
+import json, sys
+cfg_path, yd = sys.argv[1], sys.argv[2]
+try:
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    if cfg.get("ydotool") != yd:
+        cfg["ydotool"] = yd
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        print(f"      ydotool → {yd} (config actualizado)")
+except Exception as e:
+    print(f"      aviso: no pude actualizar 'ydotool' en config ({e})")
+PYEOF
+    fi
     return 0
   fi
   local model_rel="models/$(basename "${cfg_model_path:-$MODEL_DEFAULT}")"
@@ -241,9 +295,10 @@ offer_service() {
   cat > "$HOME/.config/systemd/user/deckmic.service" <<EOF
 [Unit]
 Description=DeckMic — móvil como micrófono/dictado
-After=network-online.target
+After=network-online.target ydotoold.service
 
 [Service]
+Environment=YDOTOOL_SOCKET=%t/.ydotool_socket
 ExecStart=/usr/bin/env python3 $APP_DIR/server.py --config $HOME/deckmic/config.json
 Restart=on-failure
 RestartSec=3

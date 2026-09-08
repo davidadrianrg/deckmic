@@ -51,7 +51,10 @@ cd deckmic
 El instalador:
 
 1. Descarga `whisper-cli` (binario oficial de whisper.cpp) a `~/deckmic/bin/`.
-2. Intenta instalar `ydotool` ( Wayland) o te guía si no hay paquete.
+2. Compila `ydotool`/`ydotoold` en un contenedor **podman rootless** (viene en
+   SteamOS 3) → sin desactivar el readonly, sin root, sobrevive a updates.
+   `ydotoold` se instala como **servicio de usuario**: `/dev/uinput` ya recibe
+   permiso rw para el usuario del asiento (uaccess de systemd).
 3. Descarga el modelo Whisper **multilingüe** (elige tamaño; el español va incluido).
 4. Crea `~/deckmic/config.json` con un **PIN** aleatorio.
 5. Ofrece servicio systemd de usuario (arranque automático).
@@ -139,16 +142,19 @@ mayúsculas ("ÁBRA FIREFOX" también vale).
 
 - **No conecta**: mismo WiFi? Sin AP isolation? Puerto 8443 abierto?
   `python3 server.py --check` para diagnóstico.
-- **No escribe en el PC**: ¿ydotool instalado y `ydotoold` corriendo con permisos uinput?
-  En SteamOS: `sudo systemctl enable --now ydotool`. Verifica con `echo hola | ydotool type -` .
+- **No escribe en el PC**: ¿está el daemon corriendo?
+  `systemctl --user status ydotoold` (servicio de usuario, sin sudo).
+  Verifica: `echo hola | ydotool type -f -`
 - **Certificado**: es autofirmado a propósito (LAN). Acéptalo una vez en el móvil.
 - **Transcripción lenta**: usa `small-q5_1` o `tiny-q5_1`, o `beam_size: 1` en config.
 - **Corta demasiado pronto / tarde**: ajusta `vad_silence_ms` y `vad_threshold_db`.
+- **La UI muestra versión vieja tras actualizar**: la caché del service worker se
+  versiona con el servidor (`deckmic-vX.Y.Z`, visible en Ajustes); cierra y reabre la PWA.
 
 ## Limitaciones (v0.1)
 
-- La escritura con ydotool usa el layout "es" asumido; si usas otro layout, revisa
-  `YDOTOOL_TYPE_LAYOUT` o cambia a modo portapapeles.
+- ydotool teclea vía keycodes ASCII: los acentos se escriben sin tilde
+  ("cómo" → "como"). Para el texto exacto usa el modo 📋 Portapapeles.
 - No hay streaming parcial de transcripción (se transcribe al soltar / fin de frase).
 
 ## Licencia

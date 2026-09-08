@@ -51,7 +51,7 @@ try:
 except ImportError:  # pragma: no cover
     ThreadingMixIn = object
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WWW_DIR = os.path.join(APP_DIR, "www")
 CERT_DIR = os.path.join(APP_DIR, "certs")
@@ -206,6 +206,19 @@ def norm_command_key(s):
     return " ".join(s.split())
 
 
+def ascii_sanitize(s):
+    """ydotool solo mapea ASCII a keycodes (tool_type.c): los bytes UTF-8
+    multibyte indexan fuera de su tabla. Devuelve el texto sin acentos
+    (Á→A, ñ→n) y sin caracteres no ASCII (¿, ¡, emojis…)."""
+    import unicodedata
+
+    out = []
+    for ch in unicodedata.normalize("NFD", s):
+        if unicodedata.category(ch) != "Mn":
+            out.append(ch)
+    return "".join(out).encode("ascii", "ignore").decode("ascii")
+
+
 # --------------------------------------------------------------------------
 # Whisper
 # --------------------------------------------------------------------------
@@ -293,15 +306,30 @@ class YdotoolWriter(Writer):
     def __init__(self, bin_path):
         self.bin = bin_path
         self.env = dict(os.environ)
-        # socket estándar de ydotoold si no viene en el entorno
-        self.env.setdefault("YDOTOOL_SOCKET", "/run/ydotoold/socket")
+        # ydotoold (master/1.0.4) escucha en $XDG_RUNTIME_DIR/.ydotool_socket y
+        # el cliente ydotool lee YDOTOOL_SOCKET. Los servicios de usuario de
+        # systemd siempre definen XDG_RUNTIME_DIR; el fallback es el que usa el
+        # propio cliente cuando no existe (Client/ydotool.c).
+        self.env.setdefault(
+            "YDOTOOL_SOCKET",
+            os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", ".ydotool_socket"),
+        )
 
-    def _run(self, args):
-        return subprocess.run([self.bin] + args, env=self.env,
+    def _run(self, args, input_bytes=None):
+        return subprocess.run([self.bin] + args, env=self.env, input=input_bytes,
                               capture_output=True, timeout=30)
 
     def type_text(self, text):
-        r = self._run(["type", "--key-duration", "20", text])
+        t = ascii_sanitize(text)
+        if not t:
+            return
+        if t != text:
+            log.info("ydotool: texto con no-ASCII, tecleo versión sin acentos "
+                     "(el exacto va al portapapeles en modo clip)")
+        # "-f -" lee de stdin: escape desactivado por defecto (los '\' del texto
+        # no se interpretan). Como argumento, en cambio, ydotool activaría el
+        # escape y también rompería con getopt en 1.0.4.
+        r = self._run(["type", "-f", "-"], input_bytes=t.encode("utf-8"))
         if r.returncode != 0:
             log.warning("ydotool type rc=%d: %s", r.returncode,
                         r.stderr.decode("utf-8", "ignore")[:200])
@@ -362,10 +390,12 @@ def pick_writer(cfg):
     if mode == "xdotool":
         return XdotoolWriter(cfg["xdotool"])
     # auto
-    yd = cfg.get("ydotool") if os.path.isfile(str(cfg.get("ydotool"))) else shutil.which("ydotool")
+    yd_path = os.path.expanduser(str(cfg.get("ydotool") or ""))
+    yd = yd_path if (yd_path and os.path.isfile(yd_path)) else shutil.which("ydotool")
     if yd:
         return YdotoolWriter(yd)
-    xd = cfg.get("xdotool") if os.path.isfile(str(cfg.get("xdotool"))) else shutil.which("xdotool")
+    xd_path = os.path.expanduser(str(cfg.get("xdotool") or ""))
+    xd = xd_path if (xd_path and os.path.isfile(xd_path)) else shutil.which("xdotool")
     if xd and os.environ.get("DISPLAY"):
         return XdotoolWriter(xd)
     log.warning("sin ydotool/xdotool: uso modo debug (texto en data/typed.log)")
@@ -742,6 +772,9 @@ class Handler(BaseHTTPRequestHandler):
         ext = os.path.splitext(full)[1].lower()
         with open(full, "rb") as f:
             body = f.read()
+        if rel == "sw.js":
+            # versiona la caché del service worker: bump de VERSION = shell nueva
+            body = body.replace(b"__VERSION__", VERSION.encode())
         self.send_response(200)
         self.send_header("Content-Type", MIME.get(ext, "application/octet-stream"))
         self.send_header("Content-Length", str(len(body)))
