@@ -51,7 +51,7 @@ try:
 except ImportError:  # pragma: no cover
     ThreadingMixIn = object
 
-VERSION = "0.2.1"
+VERSION = "0.2.5"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WWW_DIR = os.path.join(APP_DIR, "www")
 CERT_DIR = os.path.join(APP_DIR, "certs")

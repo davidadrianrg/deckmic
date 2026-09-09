@@ -2,6 +2,8 @@
 certs/
 data/
 models/
+bin/
+whisper/
 config.json
 *.log
 __pycache__/

@@ -183,7 +183,9 @@ function hidePin() {
 /* Valida un PIN contra /api/status. Devuelve "ok" | "bad" | "unreachable". */
 async function validatePin(pin) {
   try {
-    const r = await fetch(`/api/status?pin=${encodeURIComponent(pin)}`);
+    // AbortSignal.timeout: un fetch colgado no puede congelar el panel de Ajustes
+    const opts = ("timeout" in AbortSignal) ? { signal: AbortSignal.timeout(4000) } : {};
+    const r = await fetch(`/api/status?pin=${encodeURIComponent(pin)}`, opts);
     return r.status === 401 ? "bad" : "ok";
   } catch (e) {
     return "unreachable";
@@ -222,21 +224,32 @@ function cfgError(msg) {
 }
 
 /* ---------------- audio ---------------- */
+let audioRelaxed = false;   // reintento con {audio:true} si el micrófono entrega silencio
+
+async function teardownAudio() {
+  try { if (workletNode) workletNode.disconnect(); } catch (e) {}
+  try { if (audioCtx) await audioCtx.close(); } catch (e) {}
+  try { if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+  audioCtx = null; workletNode = null; mediaStream = null;
+}
+
 async function initAudio() {
   if (audioCtx) return;
   if (!window.isSecureContext) {
     throw new Error("el micrófono exige HTTPS: abre la app con https:// y acepta el certificado");
   }
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
+  // en algunos Android el juego de constraints ideal entrega silencio: si ya
+  // reintentamos, usamos la captura del sistema sin restricciones
+  const constraints = audioRelaxed
+    ? { audio: true }
+    : { audio: {
         channelCount: 1,
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: true,
-        sampleRate: 48000,
-      },
-    });
+      } };
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
   } catch (e) {
     mediaStream = null;
     if (e && e.name === "NotAllowedError")
@@ -245,18 +258,38 @@ async function initAudio() {
       throw new Error("el micrófono está ocupado o no disponible en este dispositivo");
     throw new Error("no pude abrir el micrófono (" + ((e && e.name) || e) + ")");
   }
-  audioCtx = new AudioContext({ sampleRate: 48000 });
+  // tasa nativa del dispositivo: el worklet remuestrea a 16 kHz el solo
+  audioCtx = new AudioContext();
   await audioCtx.resume();
+  if (audioCtx.state !== "running")
+    throw new Error("audio bloqueado (" + audioCtx.state + "): abre la app en el navegador y prueba ahí");
   await audioCtx.audioWorklet.addModule("/pcm-worklet.js");
   workletNode = new AudioWorkletNode(audioCtx, "deckmic-processor");
+  let cbCount = 0, maxPeak = 0;
   workletNode.port.onmessage = (e) => {
     const { pcm, peak } = e.data;
+    if (cbCount < 1000) { cbCount++; if (peak > maxPeak) maxPeak = peak; }
     $("level").style.width = Math.min(100, Math.round(peak * 140)) + "%";
     if (ws && ws.readyState === 1 && (micOn || vad)) {
       ws.send(pcm);
     }
   };
   workletNode.connect(audioCtx.destination); // necesario en algunos navegadores
+  // vigilante: cientos de callbacks con pico exactamente 0 = captura muda;
+  // reabrir el micro sin restricciones (una sola vez)
+  setTimeout(async () => {
+    if (!audioCtx || audioRelaxed) return;
+    if (cbCount >= 150 && maxPeak === 0) {
+      audioRelaxed = true;
+      await teardownAudio();
+      try {
+        await initAudio();
+        setStatus("micro reconfigurado sin restricciones; vuelve a hablar", "");
+      } catch (e) {
+        micFail(e);
+      }
+    }
+  }, 2500);
 }
 
 async function startSession(vadMode = false) {
@@ -406,23 +439,33 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("btn-cfg-close").addEventListener("click", () => { $("config-panel").hidden = true; });
   $("btn-cfg-save").addEventListener("click", async () => {
+    const btn = $("btn-cfg-save");
     const newPin = $("cfg-pin").value.trim();
     cfgError(null);
-    if (newPin !== store.pin && newPin) {
-      // validar antes de guardar y cerrar: así el usuario ve el error en el panel
-      const v = await validatePin(newPin);
-      if (v === "bad") { cfgError("Ese PIN no lo acepta el servidor. Revísalo (lo ves con --check)."); return; }
-      if (v === "unreachable") { cfgError("No puedo validar el PIN: no alcanzo el servidor (¿IP/certificado?)."); return; }
-      store.pin = newPin;
-    } else if (!newPin) {
-      cfgError("El PIN no puede quedar vacío.");
-      return;
+    btn.disabled = true;
+    const restore = () => { btn.disabled = false; btn.textContent = "Guardar"; };
+    try {
+      if (newPin !== store.pin && newPin) {
+        // validar antes de guardar y cerrar: así el usuario ve el error en el panel
+        btn.textContent = "Comprobando…";
+        const v = await validatePin(newPin);
+        if (v === "bad") { cfgError("Ese PIN no lo acepta el servidor. Revísalo (lo ves con --check)."); return; }
+        if (v === "unreachable") { cfgError("No puedo validar el PIN: no alcanzo el servidor (¿IP/certificado?)."); return; }
+        store.pin = newPin;
+      } else if (!newPin) {
+        cfgError("El PIN no puede quedar vacío.");
+        return;
+      }
+      store.space = $("cfg-space-key").checked;
+      store.keepAwake = $("cfg-keep-awake").checked;
+      keepAwake(store.keepAwake);
+      $("config-panel").hidden = true;
+      connect();
+    } catch (e) {
+      cfgError("Error al guardar: " + (e && e.message ? e.message : e));
+    } finally {
+      restore();
     }
-    store.space = $("cfg-space-key").checked;
-    store.keepAwake = $("cfg-keep-awake").checked;
-    keepAwake(store.keepAwake);
-    $("config-panel").hidden = true;
-    connect();
   });
 
   // visibilidad: cortar mic si la app pasa a segundo plano
