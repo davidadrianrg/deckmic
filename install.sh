@@ -281,6 +281,58 @@ EOF
 }
 
 # --------------------------------------------------------------------------
+# wl-clipboard (wl-copy/wl-paste) para el modo Portapapeles en Wayland.
+# --------------------------------------------------------------------------
+build_wl_clipboard_container() {
+  # Contenedor rootless Ubuntu 24.04 (glibc 2.39 ≤ SteamOS 3.x): el binario
+  # resultante solo necesita libwayland-client.so.0 del host.
+  local RUNNER=""
+  if command -v podman >/dev/null 2>&1; then RUNNER=podman
+  elif command -v docker >/dev/null 2>&1; then RUNNER=docker
+  else return 1; fi
+  say "  compilando wl-clipboard en contenedor $RUNNER (unos minutos)…"
+  if ! "$RUNNER" run --rm -v "$INSTALL_DIR":/out docker.io/library/ubuntu:24.04 bash -c '
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends git meson ninja-build \
+      build-essential libwayland-dev wayland-protocols pkg-config \
+      ca-certificates >/dev/null
+    git clone --depth 1 https://github.com/bugaevc/wl-clipboard /src
+    meson setup /src/build /src --buildtype=release >/dev/null
+    ninja -C /src/build >/dev/null
+    find /src/build -type f \( -name wl-copy -o -name wl-paste \) \
+      -exec cp {} /out/bin/ \;
+  '; then
+    err "la compilación en contenedor falló"
+    return 1
+  fi
+  chmod 755 "$INSTALL_DIR/bin/wl-copy" "$INSTALL_DIR/bin/wl-paste"
+  [[ -x "$INSTALL_DIR/bin/wl-copy" ]]
+}
+
+install_wl_clipboard() {
+  say "[clipboard] wl-copy (modo Portapapeles)"
+  if command -v wl-copy >/dev/null 2>&1; then
+    ok "ya en PATH: $(command -v wl-copy)"
+    WL_COPY_BIN="$(command -v wl-copy)"
+    return 0
+  fi
+  if [[ -x "$INSTALL_DIR/bin/wl-copy" ]]; then
+    ok "ya instalado: $INSTALL_DIR/bin/wl-copy"
+    WL_COPY_BIN="$INSTALL_DIR/bin/wl-copy"
+    return 0
+  fi
+  if build_wl_clipboard_container; then
+    ok "instalado $INSTALL_DIR/bin/wl-copy"
+    WL_COPY_BIN="$INSTALL_DIR/bin/wl-copy"
+  else
+    warn "sin wl-copy: el modo 📋 Portapapeles no estará disponible"
+  fi
+  return 0
+}
+
+# --------------------------------------------------------------------------
 download_model() {
   say "[3/4] modelo Whisper (offline, en tu PC)"
   local MODEL_DIR="$INSTALL_DIR/models"
@@ -328,9 +380,9 @@ write_config() {
     ok "config ya existe: $CFG (no lo toco)"
     # asegurar rutas absolutas de binarios recién instalados (el modo "auto"
     # de server.py solo detecta rutas que existen; "~" no pasa os.path.isfile)
-    python3 - "$CFG" "${YDOTOOL_BIN:-}" "${WHISPER_CLI_CFG:-}" <<'PYEOF'
+    python3 - "$CFG" "${YDOTOOL_BIN:-}" "${WHISPER_CLI_CFG:-}" "${WL_COPY_BIN:-}" <<'PYEOF'
 import json, sys
-cfg_path, yd, wv = sys.argv[1], sys.argv[2], sys.argv[3]
+cfg_path, yd, wv, wl = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
     with open(cfg_path, encoding="utf-8") as f:
         cfg = json.load(f)
@@ -339,6 +391,8 @@ try:
         cfg["ydotool"] = yd; changed.append(f"ydotool → {yd}")
     if wv and cfg.get("whisper_cli") != wv:
         cfg["whisper_cli"] = wv; changed.append(f"whisper_cli → {wv}")
+    if wl and cfg.get("wl_copy") != wl:
+        cfg["wl_copy"] = wl; changed.append(f"wl_copy → {wl}")
     if changed:
         with open(cfg_path, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
@@ -363,6 +417,7 @@ PYEOF
   "beam_size": 5,
   "writer": "auto",
   "ydotool": "${yd:-ydotool}",
+  "wl_copy": "${WL_COPY_BIN:-wl-copy}",
   "vad_threshold_db": -42.0,
   "vad_silence_ms": 1300,
   "commands": {
@@ -411,6 +466,7 @@ main() {
   detect_os
   install_whisper
   install_ydotool
+  install_wl_clipboard
   download_model "${MODEL:-}"
   offer_whisper_gpu
   write_config

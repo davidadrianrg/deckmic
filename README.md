@@ -36,9 +36,10 @@ en el PC.
 | Móvil Android/iPhone con navegador | app web (PWA instalable) |
 | Ambos en la **misma red WiFi** | WebSocket |
 
-Opcionales pero recomendados en el PC: `ydotool` (Wayland/gamescope, escritura real),
-`wl-clipboard` (modo portapapeles). Sin ellos funciona en modo *debug* (registra en
-`data/typed.log`).
+Opcionales pero recomendados en el PC: `ydotool` (Wayland/gamescope, escritura real) y
+`wl-clipboard` (modo portapapeles) — **el instalador compila ambos en un contenedor
+podman rootless** si no están en el sistema. Sin ellos funciona en modo *debug*
+(registra en `data/typed.log`).
 
 **GPU opcional**: cualquier GPU con Vulkan (AMD RADV, Intel ANV) acelera Whisper
 **~16×** (large-v3-turbo: 14,4 s → 0,9 s en una RX 7600). El instalador la detecta
@@ -130,13 +131,16 @@ En `~/deckmic/config.json`:
 ```json
 "commands": {
   "abrir firefox": "firefox",
+  "abrir opencode": "konsole -e /home/deck/.opencode/bin/opencode",
   "volumen arriba": "pactl set-sink-volume @DEFAULT_SINK@ +10%",
   "captura pantalla": "spectacle"
 }
 ```
 
 Di **"abrir firefox"** con el modo ⚡ activo. El reconocimiento normaliza acentos y
-mayúsculas ("ÁBRA FIREFOX" también vale).
+mayúsculas ("ÁBRA FIREFOX" también vale) y admite errores de transcripción
+(difflib). Combinado con el modo ⏎ **Escribir + Intro** puedes, por ejemplo,
+decir *"abrir opencode"* y luego dictar los prompts directamente al agente.
 
 ## Cómo funciona por dentro
 

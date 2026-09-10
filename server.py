@@ -405,7 +405,11 @@ def pick_writer(cfg):
 def clipboard_copy(cfg, text):
     wl = shutil.which(cfg.get("wl_copy", "wl-copy"))
     if wl:
-        p = subprocess.run([wl], input=text.encode("utf-8"), capture_output=True)
+        # sin pipes: wl-copy bifurca un proceso residente que retendría los
+        # descriptores y subprocess.run se bloquearía hasta que la selección
+        # fuese reemplazada
+        p = subprocess.run([wl], input=text.encode("utf-8"),
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return p.returncode == 0
     xc = shutil.which(cfg.get("xclip", "xclip"))
     if xc:
