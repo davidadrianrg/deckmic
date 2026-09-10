@@ -274,7 +274,12 @@ async function initAudio() {
       ws.send(pcm);
     }
   };
-  workletNode.connect(audioCtx.destination); // necesario en algunos navegadores
+  // el micro debe ENTRAR en el worklet: sin esto la captura va a ninguna parte
+  const micSource = audioCtx.createMediaStreamSource(mediaStream);
+  micSource.connect(workletNode);
+  // el worklet saca silencio (no escribe outputs): mantener el grafo conectado
+  // a destination hace que Chrome lo procese, sin realimentar el altavoz
+  workletNode.connect(audioCtx.destination);
   // vigilante: cientos de callbacks con pico exactamente 0 = captura muda;
   // reabrir el micro sin restricciones (una sola vez)
   setTimeout(async () => {

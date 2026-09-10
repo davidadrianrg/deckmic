@@ -40,6 +40,11 @@ Opcionales pero recomendados en el PC: `ydotool` (Wayland/gamescope, escritura r
 `wl-clipboard` (modo portapapeles). Sin ellos funciona en modo *debug* (registra en
 `data/typed.log`).
 
+**GPU opcional**: cualquier GPU con Vulkan (AMD RADV, Intel ANV) acelera Whisper
+**~16×** (large-v3-turbo: 14,4 s → 0,9 s en una RX 7600). El instalador la detecta
+y ofrece compilar `whisper-cli` con backend Vulkan en contenedor. No requiere
+CUDA ni drivers de NVIDIA.
+
 ## Instalación (PC)
 
 ```bash
@@ -56,11 +61,33 @@ El instalador:
    `ydotoold` se instala como **servicio de usuario**: `/dev/uinput` ya recibe
    permiso rw para el usuario del asiento (uaccess de systemd).
 3. Descarga el modelo Whisper **multilingüe** (elige tamaño; el español va incluido).
-4. Crea `~/deckmic/config.json` con un **PIN** aleatorio.
-5. Ofrece servicio systemd de usuario (arranque automático).
+4. Si detecta GPU con Vulkan, ofrece compilar `whisper-cli-vulkan`
+   (ver [GPU (Vulkan)](#gpu-vulkan) más abajo).
+5. Crea `~/deckmic/config.json` con un **PIN** aleatorio.
+6. Ofrece servicio systemd de usuario (arranque automático).
 
 En **SteamOS**: ejecútalo desde modo escritorio o por SSH. Todo se instala bajo `$HOME`
 (~/deckmic), así que **sobrevive a las actualizaciones** del sistema (que borran /usr).
+
+## GPU (Vulkan)
+
+Con GPU (AMD RADV o Intel ANV) la transcripción pasa de ~14 s a **menos de 1 s**
+con el mismo modelo `large-v3-turbo`:
+
+| Binario | large-v3-turbo-q5_0 (3 s de audio) |
+|---|---|
+| `whisper-cli` (CPU, binario oficial) | 14.369 ms |
+| `whisper-cli-vulkan` (GPU) | **887 ms** |
+
+- El instalador la ofrece al detectar ICD de Vulkan + `/dev/dri/renderD*`;
+  también puedes lanzarla a mano: `bash install.sh` (paso *[GPU]*).
+- Se compila en un contenedor rootless con **Ubuntu 24.04** (glibc 2.39) para que
+  el binario arranque en hosts con glibc igual o más nueva — SteamOS 3.x usa 2.41
+  y `archlinux:latest` ya va por 2.43.
+- Sale estático: solo necesita `libvulkan.so.1` y el driver del host (Mesa).
+- El resultado vive en `~/deckmic/bin/whisper-cli-vulkan` y `config.json` lo usa
+  automáticamente; el binario CPU queda como *fallback* (cambia `whisper_cli`
+  en `config.json` para volver).
 
 ### Arrancar
 
@@ -120,7 +147,8 @@ mayúsculas ("ÁBRA FIREFOX" también vale).
   envía binario por WS. El servidor detecta fin de frase por energía (VAD RMS configurable)
   y transcribe.
 - **Whisper**: llama a `whisper-cli` (whisper.cpp) con el WAV temporal. Modelo por defecto
-  `large-v3-turbo-q5_0` (547 MB, muy rápido en CPU y excelente en español).
+  `large-v3-turbo-q5_0` (547 MB, excelente en español). Con GPU Vulkan opcional
+  (~16× más rápido, ver sección GPU).
 - **Escritura**: `ydotool type` (funciona en Wayland y gamescope de SteamOS vía uinput)
   con fallback a `xdotool` (X11) o modo debug.
 - **Privacidad**: todo en LAN. Sin cuentas, sin nube, sin telemetría.
@@ -131,6 +159,7 @@ mayúsculas ("ÁBRA FIREFOX" también vale).
 |---|---|---|
 | `pin` | aleatorio | PIN de 6 dígitos para el móvil |
 | `port` | `8443` | Puerto HTTPS/WSS |
+| `whisper_cli` | `~/deckmic/bin/whisper-cli` | Binario whisper.cpp (usa `…-vulkan` si lo compilaste) |
 | `lang` | `"auto"` | Forzar idioma: `"es"`, `"en"`… |
 | `model` | large-v3-turbo-q5_0 | Ruta del modelo GGML |
 | `writer` | `"auto"` | `ydotool`/`xdotool`/`debug`/`none` |
@@ -146,7 +175,8 @@ mayúsculas ("ÁBRA FIREFOX" también vale).
   `systemctl --user status ydotoold` (servicio de usuario, sin sudo).
   Verifica: `echo hola | ydotool type -f -`
 - **Certificado**: es autofirmado a propósito (LAN). Acéptalo una vez en el móvil.
-- **Transcripción lenta**: usa `small-q5_1` o `tiny-q5_1`, o `beam_size: 1` en config.
+- **Transcripción lenta**: compila la versión GPU (`offer_whisper_gpu` del instalador,
+  ver sección GPU); si no hay GPU, usa `small-q5_1` o `tiny-q5_1`, o `beam_size: 1`.
 - **Corta demasiado pronto / tarde**: ajusta `vad_silence_ms` y `vad_threshold_db`.
 - **La UI muestra versión vieja tras actualizar**: la caché del service worker se
   versiona con el servidor (`deckmic-vX.Y.Z`, visible en Ajustes); cierra y reabre la PWA.

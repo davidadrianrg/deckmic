@@ -2,6 +2,7 @@
 # DeckMic — instalador para Linux/SteamOS 3 (Holo).
 # - Detecta SteamOS (read-only) y usa ~/deckmic (sobrevive a actualizaciones).
 # - Descarga whisper-cli binario oficial (x86-64) o compila desde fuente.
+# - Opcional: compila whisper-cli con GPU (Vulkan) en contenedor rootless.
 # - Instala/configura ydotool + ydotoold (escritura en Wayland/gamescope).
 # - Crea servicio systemd user (opcional) para arranque automático.
 set -euo pipefail
@@ -17,6 +18,9 @@ INSTALL_DIR="$HOME/deckmic"
 WHISPER_VERSION="b4938"
 MODEL_DEFAULT="ggml-large-v3-turbo-q5_0.bin"
 MODEL_URL_BASE="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+# se rellena solo si esta ejecución instala un binario nuevo (vulkan);
+# vacío = no tocar lo que ya haya en config
+WHISPER_CLI_CFG=""
 
 say "DeckMic — instalación"
 echo "  carpeta app : $APP_DIR"
@@ -90,6 +94,95 @@ compile_whisper() {
   install -m 755 "$SRC"/build/bin/whisper-cli "$INSTALL_DIR/bin/whisper-cli"
   ok "compilado e instalado en $INSTALL_DIR/bin/whisper-cli"
   rm -rf "$SRC"
+}
+
+# --------------------------------------------------------------------------
+# GPU (Vulkan) para Whisper: ~16x más rápido que CPU (large-v3-turbo).
+# --------------------------------------------------------------------------
+has_vulkan_gpu() {
+  # ICD de Vulkan instalado (RADV/ANV…) + nodo de render accesible
+  ls /usr/share/vulkan/icd.d/*x86_64*.json >/dev/null 2>&1 \
+    && ls /dev/dri/renderD* >/dev/null 2>&1
+}
+
+build_whisper_vulkan_container() {
+  # Compila whisper-cli con backend Vulkan en contenedor rootless:
+  # - Ubuntu 24.04 (glibc 2.39) para que el binario arranque en hosts con glibc
+  #   igual o más nueva (SteamOS 3.x: 2.41; archlinux:latest ya usa 2.43).
+  # - Estático: solo necesita libvulkan.so.1 y el driver del host.
+  local RUNNER=""
+  if command -v podman >/dev/null 2>&1; then RUNNER=podman
+  elif command -v docker >/dev/null 2>&1; then RUNNER=docker
+  else warn "ni podman ni docker disponibles"; return 1; fi
+
+  say "  compilando whisper-cli Vulkan en contenedor $RUNNER (10-15 min)…"
+  mkdir -p "$INSTALL_DIR/bin"
+  if ! "$RUNNER" run --rm -v "$INSTALL_DIR":/out docker.io/library/ubuntu:24.04 bash -c '
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends git cmake build-essential \
+      libvulkan-dev glslc glslang-tools spirv-headers ca-certificates >/dev/null
+    git clone --depth 1 https://github.com/ggml-org/whisper.cpp /src
+    cmake -S /src -B /src/build -DGGML_VULKAN=ON -DWHISPER_BUILD_TESTS=OFF \
+          -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+    cmake --build /src/build --config Release -j"$(nproc)"
+    cp /src/build/bin/whisper-cli /out/bin/whisper-cli-vulkan
+  '; then
+    err "la compilación en contenedor falló"
+    return 1
+  fi
+  chmod 755 "$INSTALL_DIR/bin/whisper-cli-vulkan"
+  [[ -x "$INSTALL_DIR/bin/whisper-cli-vulkan" ]]
+}
+
+smoke_test_vulkan() {
+  local V="$INSTALL_DIR/bin/whisper-cli-vulkan"
+  local MODEL="${cfg_model_path:-}"
+  "$V" --help >/dev/null 2>&1 || { err "el binario Vulkan no arranca en este host (¿glibc?)"; return 1; }
+  if [[ -f "$MODEL" ]]; then
+    say "  prueba de carga con el modelo…"
+    python3 - <<'PYEOF'
+import wave
+w = wave.open('/tmp/deckmic-smoke.wav', 'w')
+w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+w.writeframes(b'\x00\x00' * 1600)  # 0.1 s de silencio
+w.close()
+PYEOF
+    if timeout 180 "$V" -m "$MODEL" -f /tmp/deckmic-smoke.wav 2>&1 | grep -q "Vulkan"; then
+      ok "GPU detectada y funcionando"
+    else
+      warn "la prueba no mostró la GPU; ejecuta 'server.py --check' para revisarlo"
+    fi
+    rm -f /tmp/deckmic-smoke.wav
+  else
+    warn "sin modelo descargado todavía; verifica luego con 'server.py --check'"
+  fi
+  return 0
+}
+
+offer_whisper_gpu() {
+  say "[GPU] Whisper con Vulkan (opcional)"
+  local V="$INSTALL_DIR/bin/whisper-cli-vulkan"
+  if [[ -x "$V" ]]; then
+    ok "ya compilado: $V"
+    WHISPER_CLI_CFG="$V"
+    return 0
+  fi
+  if ! has_vulkan_gpu; then
+    say "  no detecto GPU Vulkan utilizable → sigo con el binario CPU"
+    return 0
+  fi
+  echo "  Tienes GPU con Vulkan: compilar whisper-cli con aceleración GPU"
+  echo "  baja la transcripción de ~14 s a menos de 1 s (large-v3-turbo, RX 7600)."
+  read -r -p "  ¿Compilar la versión GPU (Vulkan) en contenedor? [S/n]: " ans
+  [[ "${ans,,}" == "n" ]] && return 0
+  if build_whisper_vulkan_container && smoke_test_vulkan; then
+    ok "instalado $V (config usará este binario)"
+    WHISPER_CLI_CFG="$V"
+  else
+    warn "me quedo con el binario CPU"
+  fi
 }
 
 # --------------------------------------------------------------------------
@@ -233,29 +326,31 @@ write_config() {
   PIN="$(shuf -i 100000-999999 -n 1)"
   if [[ -f "$CFG" ]]; then
     ok "config ya existe: $CFG (no lo toco)"
-    # asegurar ruta del ydotool recién instalado (el modo "auto" de server.py
-    # solo detecta rutas absolutas existentes; "~" no pasa os.path.isfile)
-    if [[ -n "${YDOTOOL_BIN:-}" ]]; then
-      python3 - "$CFG" "$YDOTOOL_BIN" <<'PYEOF'
+    # asegurar rutas absolutas de binarios recién instalados (el modo "auto"
+    # de server.py solo detecta rutas que existen; "~" no pasa os.path.isfile)
+    python3 - "$CFG" "${YDOTOOL_BIN:-}" "${WHISPER_CLI_CFG:-}" <<'PYEOF'
 import json, sys
-cfg_path, yd = sys.argv[1], sys.argv[2]
+cfg_path, yd, wv = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     with open(cfg_path, encoding="utf-8") as f:
         cfg = json.load(f)
-    if cfg.get("ydotool") != yd:
-        cfg["ydotool"] = yd
+    changed = []
+    if yd and cfg.get("ydotool") != yd:
+        cfg["ydotool"] = yd; changed.append(f"ydotool → {yd}")
+    if wv and cfg.get("whisper_cli") != wv:
+        cfg["whisper_cli"] = wv; changed.append(f"whisper_cli → {wv}")
+    if changed:
         with open(cfg_path, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
             f.write("\n")
-        print(f"      ydotool → {yd} (config actualizado)")
+        print("      " + "; ".join(changed) + " (config actualizado)")
 except Exception as e:
-    print(f"      aviso: no pude actualizar 'ydotool' en config ({e})")
+    print(f"      aviso: no pude actualizar config ({e})")
 PYEOF
-    fi
     return 0
   fi
   local model_rel="models/$(basename "${cfg_model_path:-$MODEL_DEFAULT}")"
-  local whisper_bin="$INSTALL_DIR/bin/whisper-cli"
+  local whisper_bin="${WHISPER_CLI_CFG:-$INSTALL_DIR/bin/whisper-cli}"
   local yd="${YDOTOOL_BIN:-}"
   cat > "$CFG" <<EOF
 {
@@ -317,6 +412,7 @@ main() {
   install_whisper
   install_ydotool
   download_model "${MODEL:-}"
+  offer_whisper_gpu
   write_config
   offer_service
   echo
