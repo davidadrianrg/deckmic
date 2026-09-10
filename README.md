@@ -131,7 +131,10 @@ En `~/deckmic/config.json`:
 ```json
 "commands": {
   "abrir firefox": "firefox",
-  "abrir opencode": "konsole -e /home/deck/.opencode/bin/opencode",
+  "abrir opencode": "setsid konsole -e /home/deck/.opencode/bin/opencode >/dev/null 2>&1 &",
+  "modo gaming": "if [[ \"$(steamosctl get-default-login-mode)\" == desktop ]]; then steamosctl switch-to-game-mode; else qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout; fi",
+  "apagar el equipo": "systemctl poweroff",
+  "reiniciar el equipo": "systemctl reboot",
   "volumen arriba": "pactl set-sink-volume @DEFAULT_SINK@ +10%",
   "captura pantalla": "spectacle"
 }
@@ -141,6 +144,13 @@ Di **"abrir firefox"** con el modo ⚡ activo. El reconocimiento normaliza acent
 mayúsculas ("ÁBRA FIREFOX" también vale) y admite errores de transcripción
 (difflib). Combinado con el modo ⏎ **Escribir + Intro** puedes, por ejemplo,
 decir *"abrir opencode"* y luego dictar los prompts directamente al agente.
+
+En **SteamOS** también funcionan sin contraseña: *"modo gaming"* (usa la misma
+orden que el icono *Return to Gaming Mode*: `steamosctl switch-to-game-mode` o
+logout hacia gamescope) y *"apagar el equipo"* / *"reiniciar el equipo"*
+(logind permite ambos a la sesión activa: `CanPowerOff`/`CanReboot` = yes).
+Usa alias largos a propósito: el emparejamiento difuso con frases cortas
+podría disparar apagados accidentales.
 
 ## Cómo funciona por dentro
 
